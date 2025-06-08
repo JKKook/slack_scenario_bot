@@ -9,6 +9,7 @@ from openai import OpenAI
 import json
 from collections import defaultdict
 import re
+from typing import Dict
 
 # 환경 변수 로드
 load_dotenv()
@@ -39,6 +40,7 @@ MAX_HISTORY = 10
 # 로그 데이터 저장 리스트
 logs = []
 
+# 주제와 내용을 분석하여 적절한 어조를 결정하는 함수
 def analyze_topic_and_content(topic, outline):
     """주제와 내용을 분석하여 적절한 어조를 결정하는 함수"""
     analysis_prompt = f"""다음 주제와 내용을 분석하여 YouTube Short 시나리오에 가장 적합한 어조를 선택해 줘.
@@ -94,6 +96,7 @@ def analyze_topic_and_content(topic, outline):
             "reason": f"기본값으로 설정: {str(e)}"
         }
 
+# 시나리오 생성을 위한 프롬프트 생성
 def generate_scenario_prompt(topic, outline, tone_analysis):
     """시나리오 생성을 위한 프롬프트 생성"""
     tone_guidelines = {
@@ -159,50 +162,111 @@ def generate_scenario_prompt(topic, outline, tone_analysis):
 "AI는 우리 미래를 더 편리하게 만들 거야! 구독 눌러서 더 신기한 이야기 들어볼래?" (시각: 구독 버튼)
 """
 
-def parse_user_input(text):
-    """사용자 입력을 파싱하는 함수: 'topic, outline' 또는 '주제: ... \n상세내용: ...' 형식 지원"""
-    if not text:
+# 사용자 입력 파싱
+def parse_user_input(text: str) -> Dict[str, str]:
+    """
+    사용자 입력을 파싱하여 topic과 outline을 추출. 유효성 검증 후 결과 반환.
+    
+    Args:
+        text (str): 슬랙에서 받은 사용자 입력 텍스트
+        
+    Returns:
+        Dict[str, str]: {'topic': str, 'outline': str, 'error': str | None}
+            - error가 None이면 유효한 입력, 아니면 오류 메시지 포함
+            
+    Raises:
+        None: 모든 예외는 내부에서 처리
+    """
+    logs.append({
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'level': 'INFO',
+        'message': f"Parsing input: {text[:100]}"  # 긴 입력은 잘라서 로그
+    })
+    
+    result = {'topic': '', 'outline': '', 'error': None}
+    
+    # 1. 입력 기본 검증
+    if not text or not text.strip():
+        result['error'] = "입력이 비어있어요! 주제와 내용을 입력해 주세요."
         logs.append({
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'level': 'WARNING',
             'message': "Empty input received"
         })
-        return {'topic': '', 'outline': ''}  # 빈 입력 처리
+        return result
     
-    result = {}
-    # 1. '주제: ... \n상세내용: ...' 형식 처리
+    # 2. 입력 길이 제한 (예: 1000자 이내)
+    MAX_INPUT_LENGTH = 1000
+    if len(text) > MAX_INPUT_LENGTH:
+        result['error'] = f"입력 길이가 너무 길어요! {MAX_INPUT_LENGTH}자 이내로 입력해 주세요."
+        logs.append({
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'level': 'WARNING',
+            'message': f"Input too long: {len(text)} characters"
+        })
+        return result
+    
+    # 3. 특수 문자 및 비정상 입력 필터링
+    if not re.match(r'^[\w\s,.!?:;()\-"\']+$', text, re.UNICODE):
+        result['error'] = "허용되지 않은 특수 문자가 포함되어 있어요! 문자, 숫자, 기본 기호만 사용해 주세요."
+        logs.append({
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'level': 'WARNING',
+            'message': "Invalid characters in input"
+        })
+        return result
+    
+    # 4. '주제: ... \n상세내용: ...' 형식 처리
     patterns = {
         "topic": r"주제[:：]?\s*(.*?)(?=\s*상세내용|$)",
         "outline": r"상세내용[:：]?\s*(.*?)$"
     }
+    
     for key, pattern in patterns.items():
-        match = re.search(pattern, text, re.DOTALL)
+        match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
         if match:
             result[key] = match.group(1).strip()
     
-    # 2. 'topic, outline' 형식 처리
-    if not result:
+    # 5. 'topic, outline' 형식 처리
+    if not result['topic'] and not result['outline']:
         if ',' in text:
             parts = text.split(',', 1)  # 첫 번째 쉼표로 분리
             result['topic'] = parts[0].strip()
             result['outline'] = parts[1].strip() if len(parts) > 1 else ""
         else:
             result['topic'] = text.strip()
-            result['outline'] = text.strip()  # outline이 없으면 topic과 동일
+            result['outline'] = text.strip()  # outline 없으면 topic과 동일
     
-    # 빈 값 처리
-    result['topic'] = result.get('topic', '')
-    result['outline'] = result.get('outline', '')
+    # 6. 최종 유효성 검증
+    MIN_LENGTH = 3
+    if not result['topic'] or len(result['topic']) < MIN_LENGTH:
+        result['error'] = f"주제가 너무 짧아요! 최소 {MIN_LENGTH}자 이상 입력해 주세요."
+        logs.append({
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'level': 'WARNING',
+            'message': "Topic too short or empty"
+        })
+        return result
     
-    # 디버깅 로그
+    if not result['outline'] or len(result['outline']) < MIN_LENGTH:
+        result['error'] = f"상세 내용이 너무 짧아요! 최소 {MIN_LENGTH}자 이상 입력해 주세요."
+        logs.append({
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'level': 'WARNING',
+            'message': "Outline too short or empty"
+        })
+        return result
+    
+    # 7. 성공 로그
     logs.append({
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'level': 'INFO',
-        'message': f"Parsed input: {result}"
+        'message': f"Valid input parsed: {result['topic'][:50]}, {result['outline'][:50]}"
     })
     
     return result
 
+# GPT 응답을 구조화된 형식으로 변환, 빈 응답 검증
 def format_scenario_response(response_text):
     """GPT 응답을 구조화된 형식으로 변환, 빈 응답 검증"""
     sections = {
@@ -260,7 +324,7 @@ def format_scenario_response(response_text):
 @slack_app.command("/scenario")
 def handle_scenario_command(ack, say, command):
     try:
-        ack()  # 즉시 응답 (Slack 3초 타임아웃 방지)
+        ack()  # 즉시 응답
         user_id = command.get('user_id', 'Unknown')
         user_name = command.get('user_name', 'Unknown')
         text = command.get('text', '').strip()
@@ -269,20 +333,22 @@ def handle_scenario_command(ack, say, command):
         logs.append({
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'level': 'INFO',
-            'message': f"Received command from {user_id}: {text}"
+            'message': f"Received command from {user_id}: {text[:100]}"
         })
 
         # 사용자 입력 파싱
         parsed_input = parse_user_input(text)
-        if not parsed_input['topic'] or not parsed_input['outline']:
+        if parsed_input['error']:
             say(
-                "앗, 입력이 좀 이상한 거 같아! 이렇게 넣어줘:\n"
-                "- topic, outline (예: AI의 미래, AI가 경제생활에 미치는 영향)\n"
-                "- 주제: [주제]\n상세내용: [상세 내용]"
+                f"앗, 입력이 잘못됐어요! 😅\n"
+                f"오류: {parsed_input['error']}\n"
+                f"예시:\n"
+                f"- topic, outline (예: AI의 미래, AI가 경제생활에 미치는 영향)\n"
+                f"- 주제: [주제]\n상세내용: [상세 내용]"
             )
             return
 
-        # 주제와 내용 분석
+        # 주제와 내용 분석 (OpenAI 호출)
         tone_analysis = analyze_topic_and_content(
             parsed_input['topic'],
             parsed_input['outline']
@@ -381,7 +447,7 @@ def handle_scenario_command(ack, say, command):
             'message': f"Error in handle_scenario_command: {str(e)}"
         })
         say(f"으잉, 뭔가 꼬였나 봐... 오류: {str(e)} 😓")
-
+        
 # Flask 라우트로 Slack 요청 처리
 @app.route("/slack/chat", methods=["GET", "POST"])
 def slack_chat():
