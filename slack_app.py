@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, send_from_directory
 from slack_bolt import App
 from slack_bolt.adapter.flask import SlackRequestHandler
 import os
@@ -10,6 +10,10 @@ import json
 from collections import defaultdict
 import re
 from typing import Dict
+import tempfile
+import uuid
+from gtts import gTTS
+import requests
 
 # 환경 변수 로드
 load_dotenv()
@@ -39,6 +43,82 @@ MAX_HISTORY = 10
 
 # 로그 데이터 저장 리스트
 logs = []
+
+# TTS 변환 함수
+def text_to_speech(text, filename):
+    """텍스트를 한국어 음성으로 변환하여 MP3 파일로 저장"""
+    try:
+        tts = gTTS(text=text, lang='ko', slow=False)
+        tts.save(filename)
+        logs.append({
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'level': 'INFO',
+            'message': f"TTS conversion completed: {filename}"
+        })
+        return True
+    except Exception as e:
+        logs.append({
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'level': 'ERROR',
+            'message': f"TTS conversion error: {str(e)}"
+        })
+        return False
+
+# 슬랙에 파일 업로드 함수
+def upload_file_to_slack(file_path, filename, channel_id, client):
+    """슬랙에 파일을 업로드"""
+    try:
+        logs.append({
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'level': 'INFO',
+            'message': f"Starting file upload: {filename} to channel {channel_id}"
+        })
+        
+        # 파일 존재 확인
+        if not os.path.exists(file_path):
+            logs.append({
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'level': 'ERROR',
+                'message': f"File not found: {file_path}"
+            })
+            return None
+        
+        # 파일 크기 확인
+        file_size = os.path.getsize(file_path)
+        logs.append({
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'level': 'INFO',
+            'message': f"File size: {file_size} bytes"
+        })
+        
+        with open(file_path, 'rb') as file:
+            response = client.files_upload_v2(
+                file=file,
+                filename=filename,
+                channel_ids=[channel_id],
+                title=f"🎵 {filename}",
+                initial_comment="생성된 YouTube Short 음성 파일입니다! 🎵"
+            )
+        
+        logs.append({
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'level': 'INFO',
+            'message': f"Slack API response: {response}"
+        })
+        
+        logs.append({
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'level': 'INFO',
+            'message': f"File uploaded to Slack: {filename}"
+        })
+        return response
+    except Exception as e:
+        logs.append({
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'level': 'ERROR',
+            'message': f"File upload error: {str(e)}"
+        })
+        return None
 
 # 주제와 내용을 분석하여 적절한 어조를 결정하는 함수
 def analyze_topic_and_content(topic, outline):
@@ -328,6 +408,7 @@ def handle_scenario_command(ack, say, command):
         user_id = command.get('user_id', 'Unknown')
         user_name = command.get('user_name', 'Unknown')
         text = command.get('text', '').strip()
+        channel_id = command.get('channel_id', 'Unknown')
         
         print(f"Received command from {user_id} ({user_name}): {text}")
         logs.append({
@@ -411,8 +492,47 @@ def handle_scenario_command(ack, say, command):
         if len(message_history[user_id]) > MAX_HISTORY:
             message_history[user_id].pop(0)
         
+        # TTS 변환을 위한 전체 텍스트 생성
+        full_text = f"{formatted_response['opening']} {' '.join(formatted_response['main_points'])} {formatted_response['closing']}"
+        
+        # 임시 파일 생성
+        unique_id = str(uuid.uuid4())[:8]
+        temp_dir = tempfile.mkdtemp()
+        audio_file = os.path.join(temp_dir, f"audio_{unique_id}.mp3")
+        
+        # TTS 변환
+        say("🎵 음성 파일을 생성하고 있어요... 잠시만 기다려 주세요!")
+        
+        if text_to_speech(full_text, audio_file):
+            # 슬랙에 파일 업로드
+            filename = f"{parsed_input['topic']}_{unique_id}.mp3"
+            upload_result = upload_file_to_slack(audio_file, filename, channel_id, slack_app.client)
+            
+            if upload_result:
+                say(f"🎉 완료! 음성 파일이 업로드되었어요!")
+                # 파일 링크도 함께 보내기
+                if 'file' in upload_result and 'url_private_download' in upload_result['file']:
+                    download_url = upload_result['file']['url_private_download']
+                    say(f"📥 다운로드 링크: {download_url}")
+            else:
+                say(f"🎵 음성 파일 생성 완료! (업로드 권한이 필요해요. Slack App에 'files:write' 권한을 추가해 주세요.)")
+        else:
+            say("음성 변환에 실패했어요. 😅")
+        
+        # 임시 파일 정리
+        try:
+            if os.path.exists(audio_file):
+                os.remove(audio_file)
+            os.rmdir(temp_dir)
+        except Exception as e:
+            logs.append({
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'level': 'WARNING',
+                'message': f"Temp file cleanup error: {str(e)}"
+            })
+        
         # Slack 메시지 포맷팅
-        slack_message = f"""🎥 *{parsed_input['topic']}* - YouTube Short 시나리오
+        slack_message = f"""🎵 *{parsed_input['topic']}* - YouTube Short 시나리오
 
 *어조*: {tone_analysis['tone']}
 *왜냐면*: {tone_analysis['reason']}
@@ -437,7 +557,7 @@ def handle_scenario_command(ack, say, command):
         logs.append({
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'level': 'INFO',
-            'message': f"Generated scenario for {user_id}: {parsed_input['topic']}"
+            'message': f"Generated scenario and TTS for {user_id}: {parsed_input['topic']}"
         })
     except Exception as e:
         print(f"Error in handle_scenario_command: {e}")
@@ -447,7 +567,7 @@ def handle_scenario_command(ack, say, command):
             'message': f"Error in handle_scenario_command: {str(e)}"
         })
         say(f"으잉, 뭔가 꼬였나 봐... 오류: {str(e)} 😓")
-        
+
 # Flask 라우트로 Slack 요청 처리
 @app.route("/slack/chat", methods=["GET", "POST"])
 def slack_chat():
@@ -484,6 +604,118 @@ def clear_logs():
     global logs
     logs = []
     return jsonify({'status': 'success'})
+
+# 웹 클라이언트용 API 엔드포인트
+@app.route("/api/generate-scenario", methods=["POST"])
+def generate_scenario_api():
+    """웹 클라이언트용 시나리오 생성 API"""
+    try:
+        data = request.get_json()
+        topic = data.get('topic', '').strip()
+        outline = data.get('outline', '').strip()
+        
+        if not topic or not outline:
+            return jsonify({'error': '주제와 상세 내용을 모두 입력해주세요.'}), 400
+        
+        logs.append({
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'level': 'INFO',
+            'message': f"Web API request: {topic[:50]}"
+        })
+        
+        # 주제와 내용 분석
+        tone_analysis = analyze_topic_and_content(topic, outline)
+        
+        # 프롬프트 생성
+        prompt = generate_scenario_prompt(topic, outline, tone_analysis)
+        
+        # OpenAI API 호출
+        formatted_response = None
+        max_attempts = 2
+        for attempt in range(max_attempts):
+            try:
+                response = openai_client.chat.completions.create(
+                    model="gpt-4.1-nano",
+                    messages=[
+                        {"role": "system", "content": "You are a super friendly assistant who talks like a close friend, creating fun and engaging YouTube Short scenarios!"},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=400,
+                    temperature=0.6,
+                    presence_penalty=0.6,
+                    frequency_penalty=0.6
+                )
+                
+                formatted_response = format_scenario_response(response.choices[0].message.content.strip())
+                break
+            except Exception as e:
+                if attempt == max_attempts - 1:
+                    return jsonify({'error': '시나리오 생성에 실패했습니다.'}), 500
+                continue
+        
+        # TTS 변환
+        full_text = f"{formatted_response['opening']} {' '.join(formatted_response['main_points'])} {formatted_response['closing']}"
+        
+        # 임시 파일 생성
+        unique_id = str(uuid.uuid4())[:8]
+        temp_dir = tempfile.mkdtemp()
+        audio_file = os.path.join(temp_dir, f"audio_{unique_id}.mp3")
+        
+        audio_url = None
+        if text_to_speech(full_text, audio_file):
+            # 정적 파일 서빙을 위한 경로 생성
+            static_dir = os.path.join(os.path.dirname(__file__), 'static', 'audio')
+            os.makedirs(static_dir, exist_ok=True)
+            
+            # 파일을 static 폴더로 복사
+            static_file = os.path.join(static_dir, f"{unique_id}.mp3")
+            import shutil
+            shutil.copy2(audio_file, static_file)
+            
+            # URL 생성
+            audio_url = f"/static/audio/{unique_id}.mp3"
+            
+            # 임시 파일 정리
+            try:
+                os.remove(audio_file)
+                os.rmdir(temp_dir)
+            except:
+                pass
+        
+        # 응답 데이터 구성
+        scenario_data = {
+            'topic': topic,
+            'tone': tone_analysis['tone'],
+            'reason': tone_analysis['reason'],
+            'opening': formatted_response['opening'],
+            'main_points': formatted_response['main_points'],
+            'closing': formatted_response['closing']
+        }
+        
+        logs.append({
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'level': 'INFO',
+            'message': f"Web API success: {topic[:50]}"
+        })
+        
+        return jsonify({
+            'scenario': scenario_data,
+            'audioUrl': audio_url
+        })
+        
+    except Exception as e:
+        logs.append({
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'level': 'ERROR',
+            'message': f"Web API error: {str(e)}"
+        })
+        return jsonify({'error': '서버 오류가 발생했습니다.'}), 500
+
+# 정적 파일 서빙
+@app.route("/static/<path:filename>")
+def static_files(filename):
+    """정적 파일 서빙"""
+    return send_from_directory('static', filename)
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5001, debug=True)

@@ -6,6 +6,7 @@ logs/
 /build/
 *.o
 *.class
+package-lock.json
 
 # 환경 설정 파일 제외
 .env
@@ -18,3 +19,17 @@ test_openai.py
 client/node_modules/
 client/venv/
 venv/
+
+# 정적 파일 제외 (음성 파일들)
+static/audio/
+*.mp3
+*.wav
+
+# 임시 파일 제외
+tmp/
+temp/
+*.tmp
+
+# OS 파일 제외
+.DS_Store
+Thumbs.db
