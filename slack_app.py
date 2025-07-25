@@ -44,23 +44,146 @@ MAX_HISTORY = 10
 # 로그 데이터 저장 리스트
 logs = []
 
-# TTS 변환 함수
-def text_to_speech(text, filename):
-    """텍스트를 한국어 음성으로 변환하여 MP3 파일로 저장"""
+# 감정에 따른 텍스트 전처리 함수
+def preprocess_text_for_emotion(text, tone_analysis):
+    """tone에 따라 텍스트를 전처리하여 감정을 강화"""
+    
+    # 어조에 따른 텍스트 변환 규칙
+    tone_transformations = {
+        "친근하고 일상적인 어조": {
+            "add_words": ["진짜", "완전", "쉽게 말하면", "야", "너무"],
+            "emphasis_patterns": ["!", "~", "?"],
+            "slow_sections": []
+        },
+        "유머러스하고 재미있는 어조": {
+            "add_words": ["완전", "진짜", "대박", "쩔어", "웃겨"],
+            "emphasis_patterns": ["!", "ㅋㅋ", "ㅎㅎ", "?"],
+            "slow_sections": []
+        },
+        "영감을 주고 동기부여가 되는 어조": {
+            "add_words": ["너도", "할 수 있어", "지금", "바로", "시작해"],
+            "emphasis_patterns": ["!", "💪", "🔥"],
+            "slow_sections": ["핵심 메시지"]
+        },
+        "교육적이고 설명적인 어조": {
+            "add_words": ["쉽게 말하면", "예를 들어", "구체적으로", "분명히"],
+            "emphasis_patterns": [".", ":"],
+            "slow_sections": ["중요한 설명"]
+        },
+        "전문적이고 격식있는 어조": {
+            "add_words": ["분명히", "확실히", "구체적으로", "전문적으로"],
+            "emphasis_patterns": [".", ":"],
+            "slow_sections": ["전문 용어"]
+        }
+    }
+    
+    # 기본 설정
+    settings = tone_transformations.get(tone_analysis.get('tone', '친근하고 일상적인 어조'), 
+                                      tone_transformations["친근하고 일상적인 어조"])
+    
+    # 문장별로 감정 강화
+    sentences = re.split(r'[.!?]', text)
+    processed_sentences = []
+    
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+            
+        # 문장의 감정 강도에 따라 변환
+        if any(word in sentence for word in ['진짜', '완전', '대박', '쩔어']):
+            # 강한 감정 표현
+            sentence = sentence.replace('.', '!')
+            if not sentence.endswith('!'):
+                sentence += '!'
+        elif any(word in sentence for word in ['그런데', '하지만', '그러나']):
+            # 진지한 표현
+            sentence = sentence.replace('!', '.')
+        elif any(word in sentence for word in ['구독', '좋아요', '공유']):
+            # 행동 유도
+            sentence = sentence.replace('.', '!')
+            if not sentence.endswith('!'):
+                sentence += '!'
+        
+        # 어조에 따른 단어 추가
+        if settings["add_words"] and not any(word in sentence for word in settings["add_words"]):
+            # 첫 번째 문장에만 감정 단어 추가
+            if not processed_sentences:
+                emotion_word = settings["add_words"][0]
+                sentence = f"{emotion_word} {sentence}"
+        
+        processed_sentences.append(sentence)
+    
+    return '. '.join(processed_sentences) + '.'
+
+# 감정에 따른 TTS 설정 함수
+def get_tts_settings_for_tone(tone_analysis):
+    """tone에 따른 TTS 설정 반환"""
+    tone_settings = {
+        "친근하고 일상적인 어조": {
+            "slow": False,
+            "lang": "ko",
+            "tld": "com"
+        },
+        "유머러스하고 재미있는 어조": {
+            "slow": False,
+            "lang": "ko",
+            "tld": "com"
+        },
+        "영감을 주고 동기부여가 되는 어조": {
+            "slow": False,
+            "lang": "ko",
+            "tld": "com"
+        },
+        "교육적이고 설명적인 어조": {
+            "slow": True,  # 천천히 말하기
+            "lang": "ko",
+            "tld": "com"
+        },
+        "전문적이고 격식있는 어조": {
+            "slow": True,  # 천천히 말하기
+            "lang": "ko",
+            "tld": "com"
+        }
+    }
+    
+    return tone_settings.get(tone_analysis.get('tone', '친근하고 일상적인 어조'), 
+                            tone_settings["친근하고 일상적인 어조"])
+
+# 고도화된 TTS 변환 함수
+def text_to_speech(text, filename, tone_analysis=None):
+    """tone에 따른 감정이 표현된 TTS 변환"""
     try:
-        tts = gTTS(text=text, lang='ko', slow=False)
+        from gtts import gTTS
+        
+        # tone에 따른 텍스트 전처리
+        if tone_analysis:
+            processed_text = preprocess_text_for_emotion(text, tone_analysis)
+            tts_settings = get_tts_settings_for_tone(tone_analysis)
+        else:
+            processed_text = text
+            tts_settings = {"slow": False, "lang": "ko", "tld": "com"}
+        
+        # TTS 생성
+        tts = gTTS(
+            text=processed_text, 
+            lang=tts_settings["lang"], 
+            slow=tts_settings["slow"],
+            tld=tts_settings["tld"]
+        )
         tts.save(filename)
+        
         logs.append({
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'level': 'INFO',
-            'message': f"TTS conversion completed: {filename}"
+            'message': f"Enhanced TTS conversion completed: {filename} with tone: {tone_analysis.get('tone', 'Unknown') if tone_analysis else 'Default'}"
         })
         return True
     except Exception as e:
         logs.append({
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'level': 'ERROR',
-            'message': f"TTS conversion error: {str(e)}"
+            'message': f"Enhanced TTS conversion error: {str(e)}"
         })
         return False
 
@@ -207,21 +330,17 @@ def generate_scenario_prompt(topic, outline, tone_analysis):
   - 예: AI 스타트업 사례, 경제적 격차 데이터, 특정 산업 변화.
 - **유효한 응답 보장**: 모든 섹션(시작, 본문, 마무리)이 비어 있지 않도록 명확히 채워. 비어 있으면 안 돼!
 
-### 시나리오 형식
+### 시나리오 형식 (반드시 이 형식을 따라야 함)
 [시작 부분 (0-10초)]
-- 시청자 눈길을 사로잡는 오프닝 (최소 1-2문장).
-- 주제와 핵심 메시지 간단히 소개.
-- 선택된 어조로 친근하게.
+여기에 시작 부분 내용을 작성하세요. 최소 1-2문장이어야 합니다.
 
 [본문 (10-45초)]
-- 주요 포인트 3개 (각 8-10초, 각 최소 1-2문장).
-- 각 포인트는 주제와 상세 내용에 맞는 구체적인 사례나 설명 포함.
-- 선택된 어조로 자연스럽게.
+- 첫 번째 포인트: 여기에 첫 번째 포인트 내용을 작성하세요.
+- 두 번째 포인트: 여기에 두 번째 포인트 내용을 작성하세요.
+- 세 번째 포인트: 여기에 세 번째 포인트 내용을 작성하세요.
 
 [마무리 (45-60초)]
-- 핵심 메시지 다시 강조 (최소 1-2문장).
-- 행동 유도 (예: 구독, 공유, '너도 해봐!').
-- 선택된 어조로 마무리.
+여기에 마무리 부분 내용을 작성하세요. 최소 1-2문장이어야 합니다.
 
 ### 주의사항
 - 1분 안에 끝나도록 시간 엄격히 지켜.
@@ -233,14 +352,17 @@ def generate_scenario_prompt(topic, outline, tone_analysis):
 
 ### 예시 (친근하고 일상적인 어조)
 [시작 부분 (0-10초)]
-"야, AI가 진짜 우리 삶을 어떻게 바꾸는지 궁금하지 않아? 쉽게 말하면, AI 덕에 돈 버는 방식이 완전 달라지고 있어!" (시각: AI 로봇 클립)
+야, AI가 진짜 우리 삶을 어떻게 바꾸는지 궁금하지 않아? 쉽게 말하면, AI 덕에 돈 버는 방식이 완전 달라지고 있어!
+
 [본문 (10-45초)]
-- "AI가 물류 창고에서 물건 옮기면 비용이 팍 줄어! 예를 들어, 아마존 창고에서 로봇이 쌩쌩 달리고 있어." (시각: 창고 로봇 영상)
-- "AI 스타트업이 완전 뜨고 있어. 병 진단하는 AI 앱도 나왔어!" (시각: 스타트업 로고)
-- "근데 AI 때문에 일자리 바뀌고, 못 따라가면 좀 뒤처질 수도 있거든." (시각: 데이터 그래프)
+- AI가 물류 창고에서 물건 옮기면 비용이 팍 줄어! 예를 들어, 아마존 창고에서 로봇이 쌩쌩 달리고 있어.
+- AI 스타트업이 완전 뜨고 있어. 병 진단하는 AI 앱도 나왔어!
+- 근데 AI 때문에 일자리 바뀌고, 못 따라가면 좀 뒤처질 수도 있거든.
+
 [마무리 (45-60초)]
-"AI는 우리 미래를 더 편리하게 만들 거야! 구독 눌러서 더 신기한 이야기 들어볼래?" (시각: 구독 버튼)
-"""
+AI는 우리 미래를 더 편리하게 만들 거야! 구독 눌러서 더 신기한 이야기 들어볼래?
+
+이제 위 형식에 맞춰서 시나리오를 작성해 주세요. 반드시 모든 섹션을 채워야 합니다!"""
 
 # 사용자 입력 파싱
 def parse_user_input(text: str) -> Dict[str, str]:
@@ -359,11 +481,15 @@ def format_scenario_response(response_text):
     current_point = []
     
     # 응답을 줄 단위로 처리
-    for line in response_text.split('\n'):
+    lines = response_text.split('\n')
+    
+    for line in lines:
         line = line.strip()
         if not line:
             continue
-        if '[시작 부분' in line:
+            
+        # 섹션 헤더 확인
+        if '[시작 부분' in line or '[시작' in line:
             current_section = 'opening'
             continue
         elif '[본문' in line:
@@ -377,24 +503,44 @@ def format_scenario_response(response_text):
                 if line.startswith('-') or line.startswith('•'):
                     if current_point:
                         # 이전 포인트 저장
-                        sections['main_points'].append(' '.join(current_point).strip())
+                        point_text = ' '.join(current_point).strip()
+                        if point_text:
+                            sections['main_points'].append(point_text)
                         current_point = []
-                    current_point.append(line[1:].strip())
+                    # 새로운 포인트 시작
+                    point_text = line[1:].strip()
+                    if point_text:
+                        current_point.append(point_text)
                 else:
-                    current_point.append(line)
+                    # 현재 포인트에 내용 추가
+                    if current_point:
+                        current_point.append(line)
             else:
+                # opening 또는 closing 섹션
                 sections[current_section] += line + ' '
     
     # 마지막 main_points 처리
     if current_point:
-        sections['main_points'].append(' '.join(current_point).strip())
+        point_text = ' '.join(current_point).strip()
+        if point_text:
+            sections['main_points'].append(point_text)
     
     # 섹션 정리: 불필요한 공백 제거
     for key in sections:
         if key != 'main_points':
             sections[key] = ' '.join(sections[key].split()).strip()
     
-    # 빈 응답 검증
+    # 빈 섹션 확인 및 기본값 설정
+    if not sections['opening']:
+        sections['opening'] = "주제에 대한 흥미로운 소개입니다."
+    
+    if not sections['main_points']:
+        sections['main_points'] = ["주요 포인트를 설명합니다."]
+    
+    if not sections['closing']:
+        sections['closing'] = "핵심 메시지를 마무리합니다."
+    
+    # 최종 검증
     if not sections['opening'] or not sections['main_points'] or not sections['closing']:
         raise ValueError("빈 응답: 시작, 본문, 마무리 중 하나 이상이 비어 있습니다.")
     
@@ -503,7 +649,7 @@ def handle_scenario_command(ack, say, command):
         # TTS 변환
         say("🎵 음성 파일을 생성하고 있어요... 잠시만 기다려 주세요!")
         
-        if text_to_speech(full_text, audio_file):
+        if text_to_speech(full_text, audio_file, tone_analysis):
             # 슬랙에 파일 업로드
             filename = f"{parsed_input['topic']}_{unique_id}.mp3"
             upload_result = upload_file_to_slack(audio_file, filename, channel_id, slack_app.client)
@@ -662,7 +808,7 @@ def generate_scenario_api():
         audio_file = os.path.join(temp_dir, f"audio_{unique_id}.mp3")
         
         audio_url = None
-        if text_to_speech(full_text, audio_file):
+        if text_to_speech(full_text, audio_file, tone_analysis):
             # 정적 파일 서빙을 위한 경로 생성
             static_dir = os.path.join(os.path.dirname(__file__), 'static', 'audio')
             os.makedirs(static_dir, exist_ok=True)
